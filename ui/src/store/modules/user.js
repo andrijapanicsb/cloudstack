@@ -233,7 +233,7 @@ const user = {
           commit('SET_PROJECT', {})
           commit('SET_HEADER_NOTICES', [])
           commit('SET_FEATURES', {})
-          commit('SET_LDAP', {})
+          commit('SET_LDAP', false)
           commit('SET_CLOUDIAN', {})
           commit('SET_DOMAIN_STORE', {})
           commit('SET_LOGOUT_FLAG', false)
@@ -284,7 +284,7 @@ const user = {
           commit('SET_PROJECT', {})
           commit('SET_HEADER_NOTICES', [])
           commit('SET_FEATURES', {})
-          commit('SET_LDAP', {})
+          commit('SET_LDAP', false)
           commit('SET_CLOUDIAN', {})
           commit('SET_DOMAIN_STORE', {})
           commit('SET_LOGOUT_FLAG', false)
@@ -443,10 +443,10 @@ const user = {
         })
 
         getAPI('listLdapConfigurations').then(response => {
-          const ldapEnable = (response.ldapconfigurationresponse.count > 0)
+          const ldapEnable = ((response && response.ldapconfigurationresponse && response.ldapconfigurationresponse.count) || 0) > 0
           commit('SET_LDAP', ldapEnable)
-        }).catch(error => {
-          reject(error)
+        }).catch(ignored => {
+          commit('SET_LDAP', false)
         })
 
         getAPI('cloudianIsEnabled').then(response => {
@@ -471,7 +471,7 @@ const user = {
         commit('SET_PROJECT', {})
         commit('SET_HEADER_NOTICES', [])
         commit('SET_FEATURES', {})
-        commit('SET_LDAP', {})
+        commit('SET_LDAP', false)
         commit('SET_CLOUDIAN', {})
         commit('RESET_THEME')
         commit('SET_DOMAIN_STORE', {})
@@ -575,12 +575,14 @@ const user = {
       })
     },
     UpdateConfiguration ({ commit }) {
-      return new Promise((resolve, reject) => {
+      return new Promise((resolve) => {
         getAPI('listLdapConfigurations').then(response => {
-          const ldapEnable = (response.ldapconfigurationresponse.count > 0)
+          const ldapEnable = ((response && response.ldapconfigurationresponse && response.ldapconfigurationresponse.count) || 0) > 0
           commit('SET_LDAP', ldapEnable)
-        }).catch(error => {
-          reject(error)
+          resolve(ldapEnable)
+        }).catch(ignored => {
+          commit('SET_LDAP', false)
+          resolve(false)
         })
       })
     },
