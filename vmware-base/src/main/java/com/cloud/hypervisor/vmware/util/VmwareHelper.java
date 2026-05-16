@@ -958,22 +958,262 @@ public class VmwareHelper {
         return instanceDisks;
     }
 
+    private static GuestNicNetworkInfo getGuestNicNetworkInfo(GuestInfo guestInfo, GuestNicInfo nicInfo) {
+        GuestNicNetworkInfo networkInfo = new GuestNicNetworkInfo();
+        List<String> ipAddresses = new ArrayList<>();
+        if (CollectionUtils.isNotEmpty(nicInfo.getIpAddress())) {
+            for (String ipAddress : nicInfo.getIpAddress()) {
+                if (NetUtils.isValidIp4(ipAddress)) {
+                    ipAddresses.add(ipAddress);
+                }
+            }
+        }
+        networkInfo.setIpAddresses(ipAddresses);
+
+        Object nicIpConfig = getMethodResult(nicInfo, "getIpConfig");
+        if (CollectionUtils.isNotEmpty(ipAddresses)) {
+            networkInfo.setPrefixLength(getPrefixLengthForIp(nicIpConfig, ipAddresses.get(0)));
+        }
+        networkInfo.setGateway(StringUtils.defaultIfBlank(getDefaultGateway(nicIpConfig), getDefaultGateway(guestInfo)));
+        networkInfo.setDnsServers(getDnsServers(guestInfo));
+        networkInfo.setStaticIpConfigured(getStaticIpConfigured(nicIpConfig));
+        return networkInfo;
+    }
+
+    private static GuestNicNetworkInfo getSingleNicGuestNetworkInfoFallback(GuestInfo guestInfo) {
+        String ipAddress = getPrimaryIpv4Address(guestInfo);
+        if (StringUtils.isBlank(ipAddress)) {
+            return null;
+        }
+
+        GuestNicNetworkInfo networkInfo = new GuestNicNetworkInfo();
+        networkInfo.setIpAddresses(Collections.singletonList(ipAddress));
+        networkInfo.setPrefixLength(getPrefixLengthForIp(guestInfo, ipAddress));
+        networkInfo.setGateway(getDefaultGateway(guestInfo));
+        networkInfo.setDnsServers(getDnsServers(guestInfo));
+        return networkInfo;
+    }
+
+    private static String getPrimaryIpv4Address(GuestInfo guestInfo) {
+        String guestIpAddress = getString(getMethodResult(guestInfo, "getIpAddress"));
+        if (NetUtils.isValidIp4(guestIpAddress)) {
+            return guestIpAddress;
+        }
+
+        for (Object ipStack : getList(getMethodResult(guestInfo, "getIpStack"))) {
+            Object ipRouteConfig = getMethodResult(ipStack, "getIpRouteConfig");
+            for (Object route : getList(getMethodResult(ipRouteConfig, "getIpRoute"))) {
+                String network = getString(getMethodResult(route, "getNetwork"));
+                Integer prefixLength = getInteger(getMethodResult(route, "getPrefixLength"));
+                if (prefixLength != null && prefixLength == 32 && isUsableIpv4HostAddress(network)) {
+                    return network;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean isUsableIpv4HostAddress(String ipAddress) {
+        if (!NetUtils.isValidIp4(ipAddress)) {
+            return false;
+        }
+        if (StringUtils.startsWith(ipAddress, "127.") || StringUtils.startsWith(ipAddress, "169.254.")) {
+            return false;
+        }
+        long ip = NetUtils.ip2Long(ipAddress);
+        long firstOctet = (ip >> 24) & 0xff;
+        long lastOctet = ip & 0xff;
+        return firstOctet < 224 && lastOctet != 0 && lastOctet != 255;
+    }
+
+    private static Integer getPrefixLengthForIp(Object ipConfig, String ipAddress) {
+        if (ipConfig == null || StringUtils.isBlank(ipAddress)) {
+            return null;
+        }
+        for (Object ipAddressInfo : getList(getMethodResult(ipConfig, "getIpAddress"))) {
+            String configuredIpAddress = getString(getMethodResult(ipAddressInfo, "getIpAddress"));
+            if (ipAddress.equals(configuredIpAddress)) {
+                return getInteger(getMethodResult(ipAddressInfo, "getPrefixLength"));
+            }
+        }
+
+        for (Object ipStack : getList(getMethodResult(ipConfig, "getIpStack"))) {
+            Integer prefixLength = getPrefixLengthForIp(ipStack, ipAddress);
+            if (prefixLength != null) {
+                return prefixLength;
+            }
+        }
+
+        Object ipRouteConfig = getMethodResult(ipConfig, "getIpRouteConfig");
+        for (Object route : getList(getMethodResult(ipRouteConfig, "getIpRoute"))) {
+            String network = getString(getMethodResult(route, "getNetwork"));
+            Integer prefixLength = getInteger(getMethodResult(route, "getPrefixLength"));
+            if (StringUtils.isBlank(network) || prefixLength == null || prefixLength < 1 || prefixLength > 31) {
+                continue;
+            }
+            if (NetUtils.isValidIp4(network) && network.equals(NetUtils.getCidrSubNet(ipAddress, prefixLength))) {
+                return prefixLength;
+            }
+        }
+        return null;
+    }
+
+    private static String getDefaultGateway(Object guestNetworkObject) {
+        Object ipRouteConfig = getMethodResult(guestNetworkObject, "getIpRouteConfig");
+        for (Object route : getList(getMethodResult(ipRouteConfig, "getIpRoute"))) {
+            String network = getString(getMethodResult(route, "getNetwork"));
+            Integer prefixLength = getInteger(getMethodResult(route, "getPrefixLength"));
+            if (("0.0.0.0".equals(network) || StringUtils.isBlank(network)) && (prefixLength == null || prefixLength == 0)) {
+                Object gateway = getMethodResult(route, "getGateway");
+                String gatewayIpAddress = getString(getMethodResult(gateway, "getIpAddress"));
+                if (NetUtils.isValidIp4(gatewayIpAddress)) {
+                    return gatewayIpAddress;
+                }
+            }
+        }
+
+        for (Object ipStack : getList(getMethodResult(guestNetworkObject, "getIpStack"))) {
+            String gateway = getDefaultGateway(ipStack);
+            if (StringUtils.isNotBlank(gateway)) {
+                return gateway;
+            }
+        }
+        return null;
+    }
+
+    private static List<String> getDnsServers(Object guestInfo) {
+        List<String> dnsServers = new ArrayList<>();
+        for (Object ipStack : getList(getMethodResult(guestInfo, "getIpStack"))) {
+            Object dnsConfig = getMethodResult(ipStack, "getDnsConfig");
+            for (Object dnsAddress : getList(getMethodResult(dnsConfig, "getIpAddress"))) {
+                String dnsServer = getString(dnsAddress);
+                if (NetUtils.isValidIp4(dnsServer) && !dnsServers.contains(dnsServer)) {
+                    dnsServers.add(dnsServer);
+                }
+            }
+        }
+        return dnsServers;
+    }
+
+    private static Boolean getStaticIpConfigured(Object ipConfig) {
+        Object dhcp = getMethodResult(ipConfig, "getDhcp");
+        if (dhcp instanceof Boolean) {
+            return !((Boolean)dhcp);
+        }
+        return null;
+    }
+
+    private static Object getMethodResult(Object target, String methodName) {
+        if (target == null || StringUtils.isBlank(methodName)) {
+            return null;
+        }
+        try {
+            Method method = target.getClass().getMethod(methodName);
+            return method.invoke(target);
+        } catch (Exception e) {
+            LOGGER.trace(String.format("Unable to read VMware guest network property '%s' from '%s'", methodName, target.getClass().getSimpleName()), e);
+            return null;
+        }
+    }
+
+    private static List<?> getList(Object value) {
+        if (value instanceof List) {
+            return (List<?>)value;
+        }
+        return Collections.emptyList();
+    }
+
+    private static String getString(Object value) {
+        return value == null ? null : value.toString();
+    }
+
+    private static Integer getInteger(Object value) {
+        if (value instanceof Number) {
+            return ((Number)value).intValue();
+        }
+        if (value instanceof String) {
+            try {
+                return Integer.valueOf((String)value);
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static boolean hasUsableGuestNicNetworkInfo(GuestNicNetworkInfo networkInfo) {
+        return networkInfo != null && CollectionUtils.isNotEmpty(networkInfo.getIpAddresses());
+    }
+
+    private static void copyGuestNicNetworkInfo(UnmanagedInstanceTO.Nic instanceNic, GuestNicNetworkInfo networkInfo) {
+        instanceNic.setIpAddress(networkInfo.getIpAddresses());
+        instanceNic.setPrefixLength(networkInfo.getPrefixLength());
+        instanceNic.setGateway(networkInfo.getGateway());
+        instanceNic.setDnsServers(networkInfo.getDnsServers());
+        instanceNic.setStaticIpConfigured(networkInfo.getStaticIpConfigured());
+    }
+
+    private static class GuestNicNetworkInfo {
+        private List<String> ipAddresses;
+        private Integer prefixLength;
+        private String gateway;
+        private List<String> dnsServers;
+        private Boolean staticIpConfigured;
+
+        public List<String> getIpAddresses() {
+            return ipAddresses;
+        }
+
+        public void setIpAddresses(List<String> ipAddresses) {
+            this.ipAddresses = ipAddresses;
+        }
+
+        public Integer getPrefixLength() {
+            return prefixLength;
+        }
+
+        public void setPrefixLength(Integer prefixLength) {
+            this.prefixLength = prefixLength;
+        }
+
+        public String getGateway() {
+            return gateway;
+        }
+
+        public void setGateway(String gateway) {
+            this.gateway = gateway;
+        }
+
+        public List<String> getDnsServers() {
+            return dnsServers;
+        }
+
+        public void setDnsServers(List<String> dnsServers) {
+            this.dnsServers = dnsServers;
+        }
+
+        public Boolean getStaticIpConfigured() {
+            return staticIpConfigured;
+        }
+
+        public void setStaticIpConfigured(Boolean staticIpConfigured) {
+            this.staticIpConfigured = staticIpConfigured;
+        }
+    }
+
     private static List<UnmanagedInstanceTO.Nic> getUnmanageInstanceNics(VmwareHypervisorHost hyperHost, VirtualMachineMO vmMo) {
         List<UnmanagedInstanceTO.Nic> instanceNics = new ArrayList<>();
 
-        HashMap<String, List<String>> guestNicMacIPAddressMap = new HashMap<>();
+        HashMap<String, GuestNicNetworkInfo> guestNicMacNetworkInfoMap = new HashMap<>();
+        GuestNicNetworkInfo singleNicNetworkInfoFallback = null;
+        GuestInfo guestInfo = null;
         try {
-            GuestInfo guestInfo = vmMo.getGuestInfo();
+            guestInfo = vmMo.getGuestInfo();
             if (guestInfo.getToolsStatus() == VirtualMachineToolsStatus.TOOLS_OK) {
                 for (GuestNicInfo nicInfo: guestInfo.getNet()) {
-                    if (CollectionUtils.isNotEmpty(nicInfo.getIpAddress())) {
-                        List<String> ipAddresses = new ArrayList<>();
-                        for (String ipAddress : nicInfo.getIpAddress()) {
-                            if (NetUtils.isValidIp4(ipAddress)) {
-                                ipAddresses.add(ipAddress);
-                            }
-                        }
-                        guestNicMacIPAddressMap.put(nicInfo.getMacAddress(), ipAddresses);
+                    GuestNicNetworkInfo networkInfo = getGuestNicNetworkInfo(guestInfo, nicInfo);
+                    if (CollectionUtils.isNotEmpty(networkInfo.getIpAddresses())) {
+                        guestNicMacNetworkInfoMap.put(nicInfo.getMacAddress(), networkInfo);
                     }
                 }
             } else {
@@ -987,6 +1227,12 @@ public class VmwareHelper {
             nics = vmMo.getNicDevices();
         } catch (Exception e) {
             LOGGER.info("Unable to retrieve unmanaged instance nics. " + e.getMessage());
+        }
+        if (nics != null && nics.length == 1 && guestInfo != null && guestNicMacNetworkInfoMap.isEmpty()) {
+            singleNicNetworkInfoFallback = getSingleNicGuestNetworkInfoFallback(guestInfo);
+            if (hasUsableGuestNicNetworkInfo(singleNicNetworkInfoFallback)) {
+                LOGGER.info("Using VMware guest IP stack fallback for single-NIC instance");
+            }
         }
         if (nics != null) {
             for (VirtualDevice nic : nics) {
@@ -1005,8 +1251,11 @@ public class VmwareHelper {
                         instanceNic.setAdapterType(VirtualEthernetCardType.E1000.toString());
                     }
                     instanceNic.setMacAddress(ethCardDevice.getMacAddress());
-                    if (guestNicMacIPAddressMap.containsKey(instanceNic.getMacAddress())) {
-                        instanceNic.setIpAddress(guestNicMacIPAddressMap.get(instanceNic.getMacAddress()));
+                    if (guestNicMacNetworkInfoMap.containsKey(instanceNic.getMacAddress())) {
+                        GuestNicNetworkInfo networkInfo = guestNicMacNetworkInfoMap.get(instanceNic.getMacAddress());
+                        copyGuestNicNetworkInfo(instanceNic, networkInfo);
+                    } else if (hasUsableGuestNicNetworkInfo(singleNicNetworkInfoFallback)) {
+                        copyGuestNicNetworkInfo(instanceNic, singleNicNetworkInfoFallback);
                     }
                     if (ethCardDevice.getSlotInfo() != null) {
                         instanceNic.setPciSlot(ethCardDevice.getSlotInfo().toString());

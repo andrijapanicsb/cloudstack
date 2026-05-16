@@ -210,6 +210,7 @@ public class ApiConstants {
     public static final String DISPLAY_VOLUME = "displayvolume";
     public static final String DNS1 = "dns1";
     public static final String DNS2 = "dns2";
+    public static final String DNS_SERVERS = "dnsservers";
     public static final String IP6_DNS1 = "ip6dns1";
     public static final String IP6_DNS2 = "ip6dns2";
     public static final String DOMAIN = "domain";
@@ -412,6 +413,7 @@ public class ApiConstants {
     public static final String NICS = "nics";
     public static final String NIC_NETWORK_LIST = "nicnetworklist";
     public static final String NIC_IP_ADDRESS_LIST = "nicipaddresslist";
+    public static final String PRESERVE_STATIC_IP_NIC_LIST = "preservestaticipniclist";
     public static final String NIC_MULTIQUEUE_NUMBER = "nicmultiqueuenumber";
     public static final String NIC_PACKED_VIRTQUEUES_ENABLED = "nicpackedvirtqueuesenabled";
     public static final String NEW_START_IP = "newstartip";

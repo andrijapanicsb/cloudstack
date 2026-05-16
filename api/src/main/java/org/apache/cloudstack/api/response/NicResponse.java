@@ -134,6 +134,18 @@ public class NicResponse extends BaseResponse {
     @Param(description = "IP addresses associated with NIC found for unmanaged Instance", since="4.14.0")
     private List<String> ipAddresses;
 
+    @SerializedName("prefixlength")
+    @Param(description = "IPv4 prefix length reported by VMware Tools for unmanaged Instance NIC", since="4.22.1")
+    private Integer prefixLength;
+
+    @SerializedName(ApiConstants.DNS_SERVERS)
+    @Param(description = "DNS servers reported by VMware Tools for unmanaged Instance NIC", since="4.22.1")
+    private List<String> dnsServers;
+
+    @SerializedName("staticipconfigured")
+    @Param(description = "Whether VMware Tools reports that the unmanaged Instance NIC uses static IP configuration", since="4.22.1")
+    private Boolean staticIpConfigured;
+
     @SerializedName(ApiConstants.MTU)
     @Param(description = "MTU configured on the NIC", since="4.18.0")
     private Integer mtu;
@@ -387,6 +399,30 @@ public class NicResponse extends BaseResponse {
 
     public void setIpAddresses(List<String> ipAddresses) {
         this.ipAddresses = ipAddresses;
+    }
+
+    public Integer getPrefixLength() {
+        return prefixLength;
+    }
+
+    public void setPrefixLength(Integer prefixLength) {
+        this.prefixLength = prefixLength;
+    }
+
+    public List<String> getDnsServers() {
+        return dnsServers;
+    }
+
+    public void setDnsServers(List<String> dnsServers) {
+        this.dnsServers = dnsServers;
+    }
+
+    public Boolean getStaticIpConfigured() {
+        return staticIpConfigured;
+    }
+
+    public void setStaticIpConfigured(Boolean staticIpConfigured) {
+        this.staticIpConfigured = staticIpConfigured;
     }
 
     public Integer getMtu() {

@@ -400,6 +400,14 @@ public class UnmanagedInstanceTO {
 
         private List<String> ipAddress;
 
+        private Integer prefixLength;
+
+        private String gateway;
+
+        private List<String> dnsServers;
+
+        private Boolean staticIpConfigured;
+
         private String pciSlot;
 
         public String getNicId() {
@@ -464,6 +472,38 @@ public class UnmanagedInstanceTO {
 
         public void setIpAddress(List<String> ipAddress) {
             this.ipAddress = ipAddress;
+        }
+
+        public Integer getPrefixLength() {
+            return prefixLength;
+        }
+
+        public void setPrefixLength(Integer prefixLength) {
+            this.prefixLength = prefixLength;
+        }
+
+        public String getGateway() {
+            return gateway;
+        }
+
+        public void setGateway(String gateway) {
+            this.gateway = gateway;
+        }
+
+        public List<String> getDnsServers() {
+            return dnsServers;
+        }
+
+        public void setDnsServers(List<String> dnsServers) {
+            this.dnsServers = dnsServers;
+        }
+
+        public Boolean getStaticIpConfigured() {
+            return staticIpConfigured;
+        }
+
+        public void setStaticIpConfigured(Boolean staticIpConfigured) {
+            this.staticIpConfigured = staticIpConfigured;
         }
 
         public String getPciSlot() {

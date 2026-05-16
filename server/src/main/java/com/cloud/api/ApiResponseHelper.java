@@ -5502,6 +5502,12 @@ public class ApiResponseHelper implements ResponseGenerator, ResourceIdSupport {
                 if (!CollectionUtils.isEmpty(nic.getIpAddress())) {
                     nicResponse.setIpAddresses(nic.getIpAddress());
                 }
+                nicResponse.setPrefixLength(nic.getPrefixLength());
+                nicResponse.setGateway(nic.getGateway());
+                if (!CollectionUtils.isEmpty(nic.getDnsServers())) {
+                    nicResponse.setDnsServers(nic.getDnsServers());
+                }
+                nicResponse.setStaticIpConfigured(nic.getStaticIpConfigured());
                 nicResponse.setVlanId(nic.getVlan());
                 nicResponse.setIsolatedPvlanId(nic.getPvlan());
                 nicResponse.setIsolatedPvlanType(nic.getPvlanType());

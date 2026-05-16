@@ -37,9 +37,11 @@
               <a-alert
                 v-if="selectedVmwareVcenter && isVmRunning"
                 type="warning"
-                :showIcon="true"
-                :message="$t('message.import.running.instance.warning')"
-              />
+                :showIcon="true">
+                <template #message>
+                  <div v-html="$t('message.import.running.instance.warning')"></div>
+                </template>
+              </a-alert>
               <a-form-item name="displayname" ref="displayname">
                 <template #label>
                   <tooltip-label :title="$t('label.displayname')" :tooltip="apiParams.displayname.description"/>
@@ -384,6 +386,20 @@
                   :hypervisor="this.cluster.hypervisortype"
                   :filterMatchKey="isKVMUnmanage ? undefined : 'broadcasturi'"
                   @select-multi-network="updateMultiNetworkOffering" />
+                <a-form-item v-if="showStaticIpPreservationOptions" name="preservestaticipniclist" ref="preservestaticipniclist">
+                  <template #label>
+                    <tooltip-label
+                      :title="$t('label.preserve.static.ip.configuration')"
+                      :tooltip="apiParams.preservestaticipniclist ? apiParams.preservestaticipniclist.description : $t('message.preserve.static.ip.configuration')"/>
+                  </template>
+                  <a-checkbox
+                    v-for="nic in staticIpPreservationNics"
+                    :key="'preserve-static-ip-' + nic.id"
+                    v-model:checked="preserveStaticIpNics[nic.id]"
+                    style="display: block; margin: 4px 0;">
+                    {{ formatStaticIpPreservationNic(nic) }}
+                  </a-checkbox>
+                </a-form-item>
               </div>
               <a-row v-else style="margin: 12px 0" >
                 <div v-if="!isExternalImport && !isDiskImport">
@@ -447,7 +463,7 @@
               </a-row>
               <div :span="24" class="action-button">
                 <a-button @click="closeAction">{{ $t('label.cancel') }}</a-button>
-                <a-button :loading="loading" type="primary" @click="handleSubmit">{{ $t('label.ok') }}</a-button>
+                <a-button :loading="loading" type="primary" :disabled="isImportSubmitDisabled" @click="handleSubmit">{{ $t('label.ok') }}</a-button>
               </div>
             </a-form>
           </a-card>
@@ -574,6 +590,8 @@ export default {
       selectedRootDiskIndex: 0,
       dataDisksOfferingsMapping: {},
       nicsNetworksMapping: {},
+      preserveStaticIpNics: {},
+      capturedStaticIpNics: {},
       cpuNumberKey: 'cpuNumber',
       cpuSpeedKey: 'cpuSpeed',
       memoryKey: 'memory',
@@ -702,6 +720,29 @@ export default {
     showAllowDuplicateMacAddresses () {
       return this.showMacConflictOptions && this.apiParams.allowduplicatemacaddresses
     },
+    isSourceWindowsVm () {
+      return [
+        this.resource?.operatingsystem,
+        this.resource?.osdisplayname,
+        this.resource?.ostypename
+      ].some(osName => osName && osName.toLowerCase().includes('windows'))
+    },
+    staticIpPreservationNics () {
+      if (!this.selectedVmwareVcenter || this.cluster.hypervisortype !== 'KVM' || !this.isSourceWindowsVm) {
+        return []
+      }
+      const capturedNics = Object.values(this.capturedStaticIpNics)
+      if (capturedNics.length > 0) {
+        return capturedNics
+      }
+      return this.nics.filter(nic => this.isStaticIpPreservationEligible(nic))
+    },
+    showStaticIpPreservationOptions () {
+      return this.staticIpPreservationNics.length > 0
+    },
+    isImportSubmitDisabled () {
+      return this.selectedVmwareVcenter && this.isVmRunning
+    },
     domainSelectOptions () {
       var domains = this.options.domains.map((domain) => {
         return {
@@ -788,7 +829,7 @@ export default {
           if (this.cluster.hypervisortype === 'VMware') {
             nic.meta = this.getMeta(nic, { macaddress: 'mac', vlanid: 'vlan', networkname: 'network' })
           } else {
-            nic.meta = this.getMeta(nic, { macaddress: 'mac', vlanid: 'vlan' })
+            nic.meta = this.getMeta(nic, { macaddress: 'mac', vlanid: 'vlan', gateway: 'gateway', prefixlength: 'prefix' })
           }
           nics.push(nic)
         }
@@ -807,6 +848,13 @@ export default {
     'resource.guestOsMappings' (mappings) {
       if (mappings && mappings.length > 0) {
         this.form.osid = mappings[0].ostypeid
+      }
+    },
+    'resource.nic': {
+      immediate: true,
+      deep: true,
+      handler () {
+        this.captureStaticIpPreservationNics()
       }
     }
   },
@@ -870,6 +918,64 @@ export default {
         }
       }
       return meta
+    },
+    isStaticIpPreservationEligible (nic) {
+      return nic &&
+        nic.macaddress &&
+        this.getFirstIpv4Address(nic.ipaddresses) &&
+        nic.gateway &&
+        nic.prefixlength !== undefined &&
+        nic.prefixlength !== null
+    },
+    captureStaticIpPreservationNics () {
+      if (!this.selectedVmwareVcenter || this.cluster.hypervisortype !== 'KVM' || !this.isSourceWindowsVm) {
+        return
+      }
+      for (var nic of this.nics) {
+        if (this.isStaticIpPreservationEligible(nic)) {
+          this.capturedStaticIpNics[nic.id] = {
+            id: nic.id,
+            name: nic.name,
+            macaddress: nic.macaddress,
+            ipaddresses: [...nic.ipaddresses],
+            gateway: nic.gateway,
+            prefixlength: nic.prefixlength,
+            dnsservers: nic.dnsservers ? [...nic.dnsservers] : []
+          }
+        }
+      }
+    },
+    getFirstIpv4Address (ipAddresses) {
+      if (!ipAddresses || ipAddresses.length === 0) {
+        return null
+      }
+      return ipAddresses.find(ipAddress => this.isIpv4Address(ipAddress))
+    },
+    isIpv4Address (ipAddress) {
+      if (!ipAddress) {
+        return false
+      }
+      const parts = ipAddress.split('.')
+      return parts.length === 4 && parts.every(part => {
+        const number = Number(part)
+        return part !== '' && Number.isInteger(number) && number >= 0 && number <= 255
+      })
+    },
+    formatStaticIpPreservationNic (nic) {
+      const ipAddress = this.getFirstIpv4Address(nic.ipaddresses)
+      const dnsServers = nic.dnsservers && nic.dnsservers.length > 0 ? ', DNS: ' + nic.dnsservers.join(', ') : ''
+      return `${nic.name || nic.id} - ${nic.macaddress}, ${ipAddress}/${nic.prefixlength}, gateway: ${nic.gateway}${dnsServers}`
+    },
+    addPreserveStaticIpNicParams (params, index, nic) {
+      const ipAddress = this.getFirstIpv4Address(nic.ipaddresses)
+      params['preservestaticipniclist[' + index + '].nic'] = nic.id
+      params['preservestaticipniclist[' + index + '].macaddress'] = nic.macaddress
+      params['preservestaticipniclist[' + index + '].ipaddress'] = ipAddress
+      params['preservestaticipniclist[' + index + '].gateway'] = nic.gateway
+      params['preservestaticipniclist[' + index + '].prefixlength'] = nic.prefixlength
+      if (nic.dnsservers && nic.dnsservers.length > 0) {
+        params['preservestaticipniclist[' + index + '].dnsservers'] = nic.dnsservers.join(',')
+      }
     },
     getMinCpu () {
       if (this.isVmRunning) {
@@ -1329,6 +1435,13 @@ export default {
           }
         }
         if (this.selectedVmwareVcenter) {
+          if (this.isImportSubmitDisabled) {
+            this.$notification.error({
+              message: this.$t('message.request.failed'),
+              description: this.$t('message.import.running.instance.warning')
+            })
+            return
+          }
           if (this.selectedVmwareVcenter.existingvcenterid) {
             params.existingvcenterid = this.selectedVmwareVcenter.existingvcenterid
           } else {
@@ -1361,6 +1474,13 @@ export default {
           }
           if (values.forceconverttopool !== undefined) {
             params.forceconverttopool = values.forceconverttopool
+          }
+          var preserveStaticIpNicIndex = 0
+          for (var preserveStaticIpNic of this.staticIpPreservationNics) {
+            if (this.preserveStaticIpNics[preserveStaticIpNic.id]) {
+              this.addPreserveStaticIpNicParams(params, preserveStaticIpNicIndex, preserveStaticIpNic)
+              preserveStaticIpNicIndex++
+            }
           }
         }
         var keys = ['hostname', 'domainid', 'projectid', 'account', 'migrateallowed', 'osid']
@@ -1488,6 +1608,8 @@ export default {
       this.form.forcemstoimportvmfiles = false
       this.form.forced = false
       this.form.allowduplicatemacaddresses = false
+      this.preserveStaticIpNics = {}
+      this.capturedStaticIpNics = {}
       this.userModifiedVddkSetting = false
       this.resetStorageOptionsForConversion()
     },

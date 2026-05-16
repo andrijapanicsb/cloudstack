@@ -522,7 +522,7 @@
           :maskClosable="false"
           :footer="null"
           :cancelText="$t('label.cancel')"
-          @cancel="showUnmanageForm = false"
+          @cancel="closeImportUnmanagedInstanceForm"
           centered
           ref="importModal"
           width="auto">
@@ -555,7 +555,6 @@
 </template>
 
 <script>
-import { message } from 'ant-design-vue'
 import { ref, reactive, toRaw } from 'vue'
 import { postAPI, getAPI } from '@/api'
 import _ from 'lodash'
@@ -776,7 +775,8 @@ export default {
       loadingImportVmTasks: false,
       importVmTasks: [],
       importVmTasksFilter: 'running',
-      loadingGuestOsMappings: false
+      loadingGuestOsMappings: false,
+      vmwarePowerStatePoller: null
     }
   },
   created () {
@@ -785,6 +785,9 @@ export default {
     this.page.tasks = parseInt(this.$route.query.tasks || 1)
     this.initForm()
     this.fetchData()
+  },
+  beforeUnmount () {
+    this.stopVmwarePowerStatePolling()
   },
   computed: {
     isPageAllowed () {
@@ -1406,12 +1409,15 @@ export default {
         params.instancename = vmname
         params.hostname = hostname
       }
-      getAPI('listVmwareDcVms', params).then(async json => {
+      return getAPI('listVmwareDcVms', params).then(async json => {
         const response = json.listvmwaredcvmsresponse
         this.selectedUnmanagedInstance = response.unmanagedinstance[0]
         this.selectedUnmanagedInstance.ostypename = this.selectedUnmanagedInstance.osdisplayname
         this.selectedUnmanagedInstance.state = this.selectedUnmanagedInstance.powerstate
         this.selectedUnmanagedInstance.guestOsMappings = await this.fetchGuestOsMappings(this.selectedUnmanagedInstance.osid, this.selectedUnmanagedInstance.hypervisorversion)
+        if (this.selectedUnmanagedInstance.powerstate !== 'PowerOn') {
+          this.stopVmwarePowerStatePolling()
+        }
       }).catch(error => {
         this.$notifyError(error)
       }).finally(() => {
@@ -1427,20 +1433,31 @@ export default {
         this.selectedUnmanagedInstance.ostypename = this.selectedUnmanagedInstance.osdisplayname
         this.selectedUnmanagedInstance.state = this.selectedUnmanagedInstance.powerstate
       }
-      if (this.isMigrateFromVmware && this.selectedUnmanagedInstance.state === 'PowerOn' && this.selectedUnmanagedInstance.ostypename.toLowerCase().includes('windows')) {
-        message.error({
-          content: () => 'Cannot import Running Windows VMs, please gracefully shutdown the source VM before importing',
-          style: {
-            marginTop: '20vh',
-            color: 'red'
-          }
-        })
-        this.showUnmanageForm = false
-      } else if (this.isMigrateFromVmware) {
+      if (this.isMigrateFromVmware) {
         this.fetchVmwareInstanceForKVMMigration(this.selectedUnmanagedInstance.name, this.selectedUnmanagedInstance.hostname)
+        this.startVmwarePowerStatePolling()
         this.showUnmanageForm = true
       } else {
         this.showUnmanageForm = true
+      }
+    },
+    startVmwarePowerStatePolling () {
+      this.stopVmwarePowerStatePolling()
+      if (!this.isMigrateFromVmware || !this.selectedVmwareVcenter) {
+        return
+      }
+      this.vmwarePowerStatePoller = setInterval(() => {
+        if (!this.showUnmanageForm || !this.selectedUnmanagedInstance || this.selectedUnmanagedInstance.powerstate !== 'PowerOn') {
+          this.stopVmwarePowerStatePolling()
+          return
+        }
+        this.fetchVmwareInstanceForKVMMigration(this.selectedUnmanagedInstance.name, this.selectedUnmanagedInstance.hostname)
+      }, 10000)
+    },
+    stopVmwarePowerStatePolling () {
+      if (this.vmwarePowerStatePoller) {
+        clearInterval(this.vmwarePowerStatePoller)
+        this.vmwarePowerStatePoller = null
       }
     },
     onImportInstanceAction () {
@@ -1463,6 +1480,7 @@ export default {
       this.showUnmanageForm = true
     },
     closeImportUnmanagedInstanceForm () {
+      this.stopVmwarePowerStatePolling()
       this.selectedUnmanagedInstance = {}
       this.showUnmanageForm = false
     },

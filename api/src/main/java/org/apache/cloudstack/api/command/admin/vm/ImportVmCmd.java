@@ -20,9 +20,11 @@ package org.apache.cloudstack.api.command.admin.vm;
 import com.cloud.event.EventTypes;
 import com.cloud.exception.ConcurrentOperationException;
 import com.cloud.exception.InsufficientCapacityException;
+import com.cloud.exception.InvalidParameterValueException;
 import com.cloud.exception.NetworkRuleConflictException;
 import com.cloud.exception.ResourceAllocationException;
 import com.cloud.exception.ResourceUnavailableException;
+import com.cloud.vm.VmDetailConstants;
 import org.apache.cloudstack.acl.RoleType;
 import org.apache.cloudstack.api.APICommand;
 import org.apache.cloudstack.api.ApiConstants;
@@ -37,12 +39,21 @@ import org.apache.cloudstack.api.response.StoragePoolResponse;
 import org.apache.cloudstack.api.response.UserVmResponse;
 import org.apache.cloudstack.api.response.VmwareDatacenterResponse;
 import org.apache.cloudstack.api.response.ZoneResponse;
+import org.apache.cloudstack.vm.UnmanagedInstanceTO;
 import org.apache.cloudstack.vm.VmImportService;
 import org.apache.commons.lang3.BooleanUtils;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.collections.MapUtils;
 
 import javax.inject.Inject;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 @APICommand(name = "importVm",
         description = "Import virtual machine from a unmanaged host into CloudStack",
@@ -166,6 +177,13 @@ public class ImportVmCmd extends ImportUnmanagedInstanceCmd {
             description = "(only for importing VMs from VMware to KVM) optional - extra parameters to be passed on the virt-v2v command, if allowed by the administrator")
     private String extraParams;
 
+    @Parameter(name = ApiConstants.PRESERVE_STATIC_IP_NIC_LIST,
+            type = CommandType.MAP,
+            since = "4.22.1",
+            description = "(only for importing VMs from VMware to KVM) optional - source NICs where detected VMware Tools IPv4 configuration should be preserved through virt-v2v. Uses key NIC. " +
+                    "Optionally accepts captured macaddress, ipaddress, gateway, prefixlength and comma-separated dnsservers values.")
+    private Map preserveStaticIpNicList;
+
     @Parameter(name = ApiConstants.FORCE_CONVERT_TO_POOL,
             type = CommandType.BOOLEAN,
             since = "4.22",
@@ -282,6 +300,59 @@ public class ImportVmCmd extends ImportUnmanagedInstanceCmd {
 
     public String getExtraParams() {
         return extraParams;
+    }
+
+    public Set<String> getPreserveStaticIpNicIds() {
+        Set<String> nicIds = new HashSet<>();
+        for (UnmanagedInstanceTO.Nic nic : getPreserveStaticIpNics()) {
+            nicIds.add(nic.getNicId());
+        }
+        return nicIds;
+    }
+
+    public List<UnmanagedInstanceTO.Nic> getPreserveStaticIpNics() {
+        List<UnmanagedInstanceTO.Nic> nics = new ArrayList<>();
+        if (MapUtils.isNotEmpty(preserveStaticIpNicList)) {
+            for (Map<String, String> entry : (Collection<Map<String, String>>)preserveStaticIpNicList.values()) {
+                String nic = entry.get(VmDetailConstants.NIC);
+                if (StringUtils.isEmpty(nic)) {
+                    throw new InvalidParameterValueException(String.format("NIC ID: '%s' is invalid for IPv4 configuration preservation", nic));
+                }
+                UnmanagedInstanceTO.Nic preserveNic = new UnmanagedInstanceTO.Nic();
+                preserveNic.setNicId(nic);
+                preserveNic.setMacAddress(entry.get(ApiConstants.MAC_ADDRESS));
+                String ipAddress = entry.get(ApiConstants.IP_ADDRESS);
+                if (StringUtils.isNotBlank(ipAddress)) {
+                    preserveNic.setIpAddress(List.of(ipAddress));
+                }
+                preserveNic.setGateway(entry.get(ApiConstants.GATEWAY));
+                preserveNic.setPrefixLength(getInteger(entry.get("prefixlength"), "prefixlength"));
+                preserveNic.setDnsServers(getDnsServers(entry.get(ApiConstants.DNS_SERVERS)));
+                nics.add(preserveNic);
+            }
+        }
+        return nics;
+    }
+
+    private Integer getInteger(String value, String name) {
+        if (StringUtils.isBlank(value)) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(value);
+        } catch (NumberFormatException e) {
+            throw new InvalidParameterValueException(String.format("%s: '%s' is invalid for IPv4 configuration preservation", name, value));
+        }
+    }
+
+    private List<String> getDnsServers(String dnsServers) {
+        if (StringUtils.isBlank(dnsServers)) {
+            return null;
+        }
+        return Arrays.stream(dnsServers.split(","))
+                .map(StringUtils::trimToNull)
+                .filter(StringUtils::isNotBlank)
+                .collect(java.util.stream.Collectors.toList());
     }
 
     public boolean getForceConvertToPool() {

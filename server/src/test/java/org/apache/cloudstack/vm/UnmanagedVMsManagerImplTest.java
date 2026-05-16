@@ -31,12 +31,15 @@ import static org.mockito.Mockito.when;
 
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import org.apache.cloudstack.api.ApiConstants;
@@ -77,6 +80,7 @@ import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnitRunner;
+import org.apache.commons.lang3.StringUtils;
 
 import com.cloud.agent.AgentManager;
 import com.cloud.agent.api.Answer;
@@ -1469,6 +1473,113 @@ public class UnmanagedVMsManagerImplTest {
         Mockito.when(configKeyMockParamsAllowed.value()).thenReturn(true);
         Mockito.when(configKeyMockParamsAllowedList.value()).thenReturn("network,x");
         unmanagedVMsManager.checkExtraParamsAllowed("--mac 00:0c:29:e6:3d:9d:ip:192.168.0.89,192.168.0.1,24,192.168.0.254 -x");
+    }
+
+    private UnmanagedInstanceTO getUnmanagedInstanceWithOs(String operatingSystem) {
+        UnmanagedInstanceTO sourceInstance = new UnmanagedInstanceTO();
+        sourceInstance.setName("source-vm");
+        sourceInstance.setOperatingSystem(operatingSystem);
+        return sourceInstance;
+    }
+
+    private UnmanagedInstanceTO.Nic getStaticIpNic(String nicId, String macAddress, String ipAddress, String gateway,
+            Integer prefixLength, Boolean staticIpConfigured) {
+        UnmanagedInstanceTO.Nic nic = new UnmanagedInstanceTO.Nic();
+        nic.setNicId(nicId);
+        nic.setMacAddress(macAddress);
+        nic.setIpAddress(Collections.singletonList(ipAddress));
+        nic.setGateway(gateway);
+        nic.setPrefixLength(prefixLength);
+        nic.setDnsServers(Arrays.asList("8.8.8.8", "1.1.1.1"));
+        nic.setStaticIpConfigured(staticIpConfigured);
+        return nic;
+    }
+
+    @Test
+    public void testBuildVirtV2vStaticIpExtraParamsWindowsStaticNic() {
+        UnmanagedInstanceTO sourceInstance = getUnmanagedInstanceWithOs("Microsoft Windows Server 2022");
+        sourceInstance.setNics(Collections.singletonList(getStaticIpNic("Network adapter 1", "00:50:56:ac:90:79", "192.168.10.50", "192.168.10.1", 24, true)));
+
+        String params = unmanagedVMsManager.buildVirtV2vStaticIpExtraParams(sourceInstance, Collections.singleton("Network adapter 1"));
+
+        Assert.assertEquals("--mac 00:50:56:ac:90:79:ip:192.168.10.50,192.168.10.1,24,8.8.8.8,1.1.1.1", params);
+    }
+
+    @Test
+    public void testBuildVirtV2vStaticIpExtraParamsMultipleNics() {
+        UnmanagedInstanceTO sourceInstance = getUnmanagedInstanceWithOs("Microsoft Windows Server 2022");
+        List<UnmanagedInstanceTO.Nic> nics = new ArrayList<>();
+        nics.add(getStaticIpNic("Network adapter 1", "00:50:56:ac:90:79", "192.168.10.50", "192.168.10.1", 24, true));
+        nics.add(getStaticIpNic("Network adapter 2", "00:50:56:ac:90:80", "10.10.10.50", "10.10.10.1", 24, true));
+        sourceInstance.setNics(nics);
+
+        Set<String> selectedNicIds = new HashSet<>(Arrays.asList("Network adapter 1", "Network adapter 2"));
+        String params = unmanagedVMsManager.buildVirtV2vStaticIpExtraParams(sourceInstance, selectedNicIds);
+
+        Assert.assertTrue(params.contains("--mac 00:50:56:ac:90:79:ip:192.168.10.50,192.168.10.1,24,8.8.8.8,1.1.1.1"));
+        Assert.assertTrue(params.contains("--mac 00:50:56:ac:90:80:ip:10.10.10.50,10.10.10.1,24,8.8.8.8,1.1.1.1"));
+    }
+
+    @Test
+    public void testBuildVirtV2vStaticIpExtraParamsDhcpNicAllowedWhenSelected() {
+        UnmanagedInstanceTO sourceInstance = getUnmanagedInstanceWithOs("Microsoft Windows Server 2022");
+        sourceInstance.setNics(Collections.singletonList(getStaticIpNic("Network adapter 1", "00:50:56:ac:90:79", "192.168.10.50", "192.168.10.1", 24, false)));
+
+        String params = unmanagedVMsManager.buildVirtV2vStaticIpExtraParams(sourceInstance, Collections.singleton("Network adapter 1"));
+
+        Assert.assertEquals("--mac 00:50:56:ac:90:79:ip:192.168.10.50,192.168.10.1,24,8.8.8.8,1.1.1.1", params);
+    }
+
+    @Test
+    public void testBuildVirtV2vStaticIpExtraParamsMissingGatewaySkipped() {
+        UnmanagedInstanceTO sourceInstance = getUnmanagedInstanceWithOs("Microsoft Windows Server 2022");
+        sourceInstance.setNics(Collections.singletonList(getStaticIpNic("Network adapter 1", "00:50:56:ac:90:79", "192.168.10.50", null, 24, true)));
+
+        String params = unmanagedVMsManager.buildVirtV2vStaticIpExtraParams(sourceInstance, Collections.singleton("Network adapter 1"));
+
+        Assert.assertTrue(StringUtils.isBlank(params));
+    }
+
+    @Test
+    public void testBuildVirtV2vStaticIpExtraParamsDnsOptional() {
+        UnmanagedInstanceTO sourceInstance = getUnmanagedInstanceWithOs("Microsoft Windows Server 2022");
+        UnmanagedInstanceTO.Nic nic = getStaticIpNic("Network adapter 1", "00:50:56:ac:90:79", "192.168.10.50", "192.168.10.1", 24, true);
+        nic.setDnsServers(null);
+        sourceInstance.setNics(Collections.singletonList(nic));
+
+        String params = unmanagedVMsManager.buildVirtV2vStaticIpExtraParams(sourceInstance, Collections.singleton("Network adapter 1"));
+
+        Assert.assertEquals("--mac 00:50:56:ac:90:79:ip:192.168.10.50,192.168.10.1,24", params);
+    }
+
+    @Test
+    public void testBuildVirtV2vStaticIpExtraParamsCapturedNicValues() {
+        UnmanagedInstanceTO sourceInstance = getUnmanagedInstanceWithOs("Microsoft Windows Server 2022");
+        UnmanagedInstanceTO.Nic sourceNic = getStaticIpNic("Network adapter 1", "00:50:56:ac:90:79", null, null, null, null);
+        sourceInstance.setNics(Collections.singletonList(sourceNic));
+        UnmanagedInstanceTO.Nic capturedNic = getStaticIpNic("Network adapter 1", "00:50:56:ac:90:79", "192.168.10.50", "192.168.10.1", 24, null);
+
+        String params = unmanagedVMsManager.buildVirtV2vStaticIpExtraParams(sourceInstance, Collections.singletonList(capturedNic));
+
+        Assert.assertEquals("--mac 00:50:56:ac:90:79:ip:192.168.10.50,192.168.10.1,24,8.8.8.8,1.1.1.1", params);
+    }
+
+    @Test
+    public void testBuildVirtV2vStaticIpExtraParamsNonWindowsSkipped() {
+        UnmanagedInstanceTO sourceInstance = getUnmanagedInstanceWithOs("Ubuntu Linux");
+        sourceInstance.setNics(Collections.singletonList(getStaticIpNic("Network adapter 1", "00:50:56:ac:90:79", "192.168.10.50", "192.168.10.1", 24, true)));
+
+        String params = unmanagedVMsManager.buildVirtV2vStaticIpExtraParams(sourceInstance, Collections.singleton("Network adapter 1"));
+
+        Assert.assertNull(params);
+    }
+
+    @Test
+    public void testAppendVirtV2vStaticIpExtraParams() {
+        String params = unmanagedVMsManager.appendVirtV2vStaticIpExtraParams("-x",
+                "--mac 00:50:56:ac:90:79:ip:192.168.10.50,192.168.10.1,24");
+
+        Assert.assertEquals("-x --mac 00:50:56:ac:90:79:ip:192.168.10.50,192.168.10.1,24", params);
     }
 
     @Test

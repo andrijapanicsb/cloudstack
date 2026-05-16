@@ -1402,6 +1402,147 @@ public class UnmanagedVMsManagerImpl implements UnmanagedVMsManager {
         }
     }
 
+    protected String buildVirtV2vStaticIpExtraParams(UnmanagedInstanceTO sourceInstance, Set<String> selectedNicIds) {
+        if (CollectionUtils.isEmpty(selectedNicIds)) {
+            return null;
+        }
+        List<UnmanagedInstanceTO.Nic> selectedNics = selectedNicIds.stream()
+                .map(nicId -> {
+                    UnmanagedInstanceTO.Nic nic = new UnmanagedInstanceTO.Nic();
+                    nic.setNicId(nicId);
+                    return nic;
+                })
+                .collect(Collectors.toList());
+        return buildVirtV2vStaticIpExtraParams(sourceInstance, selectedNics);
+    }
+
+    protected String buildVirtV2vStaticIpExtraParams(UnmanagedInstanceTO sourceInstance, List<UnmanagedInstanceTO.Nic> selectedNics) {
+        if (sourceInstance == null || CollectionUtils.isEmpty(selectedNics)) {
+            return null;
+        }
+        if (!StringUtils.containsIgnoreCase(sourceInstance.getOperatingSystem(), "windows")) {
+            logger.warn("Skipping virt-v2v IPv4 configuration preservation for instance {} because its guest OS is not Windows: {}",
+                    sourceInstance.getName(), sourceInstance.getOperatingSystem());
+            return null;
+        }
+
+        List<String> macParams = new ArrayList<>();
+        Set<String> matchedNicIds = new HashSet<>();
+        List<UnmanagedInstanceTO.Nic> sourceNics = CollectionUtils.isEmpty(sourceInstance.getNics()) ? Collections.emptyList() : sourceInstance.getNics();
+        for (UnmanagedInstanceTO.Nic selectedNic : selectedNics) {
+            String nicId = selectedNic.getNicId();
+            if (StringUtils.isBlank(nicId)) {
+                continue;
+            }
+            UnmanagedInstanceTO.Nic sourceNic = sourceNics.stream()
+                    .filter(nic -> nicId.equals(nic.getNicId()))
+                    .findFirst()
+                    .orElse(null);
+            if (sourceNic != null || hasCapturedStaticIpNicValues(selectedNic)) {
+                matchedNicIds.add(nicId);
+            }
+            UnmanagedInstanceTO.Nic nic = mergeCapturedStaticIpNic(sourceNic, selectedNic);
+            String macParam = buildVirtV2vStaticIpMacParameter(sourceInstance, nic);
+            if (StringUtils.isNotBlank(macParam)) {
+                macParams.add("--mac " + macParam);
+            }
+        }
+
+        selectedNics.stream()
+                .map(UnmanagedInstanceTO.Nic::getNicId)
+                .filter(nicId -> !matchedNicIds.contains(nicId))
+                .forEach(nicId -> logger.warn("Skipping virt-v2v IPv4 configuration preservation for selected NIC {} on instance {} because the source NIC was not found",
+                        nicId, sourceInstance.getName()));
+        return StringUtils.join(macParams, " ");
+    }
+
+    private boolean hasCapturedStaticIpNicValues(UnmanagedInstanceTO.Nic nic) {
+        return nic != null &&
+                StringUtils.isNotBlank(nic.getMacAddress()) &&
+                CollectionUtils.isNotEmpty(nic.getIpAddress()) &&
+                StringUtils.isNotBlank(nic.getGateway()) &&
+                nic.getPrefixLength() != null;
+    }
+
+    private UnmanagedInstanceTO.Nic mergeCapturedStaticIpNic(UnmanagedInstanceTO.Nic sourceNic, UnmanagedInstanceTO.Nic selectedNic) {
+        UnmanagedInstanceTO.Nic nic = new UnmanagedInstanceTO.Nic();
+        nic.setNicId(StringUtils.defaultIfBlank(selectedNic.getNicId(), sourceNic != null ? sourceNic.getNicId() : null));
+        nic.setMacAddress(StringUtils.defaultIfBlank(selectedNic.getMacAddress(), sourceNic != null ? sourceNic.getMacAddress() : null));
+        nic.setIpAddress(CollectionUtils.isNotEmpty(selectedNic.getIpAddress()) ? selectedNic.getIpAddress() : sourceNic != null ? sourceNic.getIpAddress() : null);
+        nic.setGateway(StringUtils.defaultIfBlank(selectedNic.getGateway(), sourceNic != null ? sourceNic.getGateway() : null));
+        nic.setPrefixLength(selectedNic.getPrefixLength() != null ? selectedNic.getPrefixLength() : sourceNic != null ? sourceNic.getPrefixLength() : null);
+        nic.setDnsServers(CollectionUtils.isNotEmpty(selectedNic.getDnsServers()) ? selectedNic.getDnsServers() : sourceNic != null ? sourceNic.getDnsServers() : null);
+        return nic;
+    }
+
+    protected String buildVirtV2vStaticIpMacParameter(UnmanagedInstanceTO sourceInstance, UnmanagedInstanceTO.Nic nic) {
+        if (nic == null) {
+            return null;
+        }
+        String nicId = nic.getNicId();
+
+        String macAddress = nic.getMacAddress();
+        if (StringUtils.isBlank(macAddress) || !NetUtils.isValidMac(macAddress)) {
+            logger.warn("Skipping virt-v2v IPv4 configuration preservation for NIC {} on instance {} because MAC address '{}' is invalid",
+                    nicId, sourceInstance.getName(), macAddress);
+            return null;
+        }
+
+        String ipAddress = getFirstIpv4Address(nic.getIpAddress());
+        if (StringUtils.isBlank(ipAddress)) {
+            logger.warn("Skipping virt-v2v IPv4 configuration preservation for NIC {} on instance {} because VMware Tools did not report an IPv4 address",
+                    nicId, sourceInstance.getName());
+            return null;
+        }
+
+        String gateway = nic.getGateway();
+        if (!NetUtils.isValidIp4(gateway)) {
+            logger.warn("Skipping virt-v2v IPv4 configuration preservation for NIC {} on instance {} because VMware Tools did not report a valid IPv4 default gateway",
+                    nicId, sourceInstance.getName());
+            return null;
+        }
+
+        Integer prefixLength = nic.getPrefixLength();
+        if (prefixLength == null || prefixLength < 0 || prefixLength > 32) {
+            logger.warn("Skipping virt-v2v IPv4 configuration preservation for NIC {} on instance {} because VMware Tools did not report a valid IPv4 prefix length",
+                    nicId, sourceInstance.getName());
+            return null;
+        }
+
+        List<String> values = new ArrayList<>();
+        values.add(ipAddress);
+        values.add(gateway);
+        values.add(String.valueOf(prefixLength));
+        if (CollectionUtils.isNotEmpty(nic.getDnsServers())) {
+            nic.getDnsServers().stream()
+                    .filter(NetUtils::isValidIp4)
+                    .forEach(values::add);
+        }
+        logger.info("Preserving Windows IPv4 configuration through virt-v2v for instance {} NIC {} MAC {}",
+                sourceInstance.getName(), nicId, macAddress);
+        return macAddress + ":ip:" + StringUtils.join(values, ",");
+    }
+
+    protected String appendVirtV2vStaticIpExtraParams(String extraParams, String staticIpExtraParams) {
+        if (StringUtils.isBlank(staticIpExtraParams)) {
+            return extraParams;
+        }
+        if (StringUtils.isBlank(extraParams)) {
+            return staticIpExtraParams;
+        }
+        return StringUtils.trim(extraParams) + " " + StringUtils.trim(staticIpExtraParams);
+    }
+
+    private String getFirstIpv4Address(List<String> ipAddresses) {
+        if (CollectionUtils.isEmpty(ipAddresses)) {
+            return null;
+        }
+        return ipAddresses.stream()
+                .filter(NetUtils::isValidIp4)
+                .findFirst()
+                .orElse(null);
+    }
+
     private long getUserIdForImportInstance(Account owner) {
         long userId = CallContext.current().getCallingUserId();
         List<UserVO> userVOs = userDao.listByAccount(owner.getAccountId());
@@ -1743,10 +1884,13 @@ public class UnmanagedVMsManagerImpl implements UnmanagedVMsManager {
             // Ensure that the configured resource limits will not be exceeded before beginning the conversion process
             checkVmResourceLimitsForUnmanagedInstanceImport(owner, sourceVMwareInstance, serviceOffering, template, reservations);
 
-            boolean isWindowsVm = sourceVMwareInstance.getOperatingSystem().toLowerCase().contains("windows");
+            boolean isWindowsVm = StringUtils.containsIgnoreCase(sourceVMwareInstance.getOperatingSystem(), "windows");
             if (isWindowsVm) {
                 checkConversionSupportOnHost(convertHost, sourceVMName, true, useVddk, details);
             }
+
+            String staticIpExtraParams = buildVirtV2vStaticIpExtraParams(sourceVMwareInstance, cmd.getPreserveStaticIpNics());
+            extraParams = appendVirtV2vStaticIpExtraParams(extraParams, staticIpExtraParams);
 
             checkNetworkingBeforeConvertingVmwareInstance(zone, owner, displayName, hostName, sourceVMwareInstance, nicNetworkMap, nicIpAddressMap, forced, allowDuplicateMacAddress);
             UnmanagedInstanceTO convertedInstance;
