@@ -19,6 +19,7 @@
 package com.cloud.hypervisor.kvm.resource.wrapper;
 
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 
@@ -169,7 +170,7 @@ public class LibvirtConvertInstanceCommandWrapperTest {
             Answer answer = convertInstanceCommandWrapper.execute(cmd, libvirtComputingResourceMock);
             Assert.assertFalse(answer.getResult());
             Mockito.verify(convertInstanceCommandWrapper).performInstanceConversion(Mockito.anyString(), Mockito.anyString(),
-                    Mockito.anyString(), Mockito.anyString(), Mockito.anyLong(), Mockito.anyBoolean(), Mockito.nullable(String.class), Mockito.any(LibvirtComputingResource.class));
+                    Mockito.anyString(), Mockito.anyString(), Mockito.anyLong(), Mockito.anyBoolean(), Mockito.nullable(String.class), Mockito.any(LibvirtComputingResource.class), Mockito.anyBoolean());
         }
     }
 
@@ -214,7 +215,7 @@ public class LibvirtConvertInstanceCommandWrapperTest {
                     .thenReturn(true);
 
             boolean result = convertInstanceCommandWrapper.performInstanceConversionUsingVddk(
-                    remoteInstanceTO, vmName, "/tmp/convert", "/opt/vddk", "libvirt", null, null, 1000L, false, null, "tmp-uuid", "-ip");
+                    remoteInstanceTO, vmName, "/tmp/convert", "/opt/vddk", "libvirt", null, null, 1000L, false, null, "tmp-uuid", "-ip", false);
 
             Assert.assertTrue(result);
             Script scriptMock = ignored.constructed().get(0);
@@ -249,7 +250,7 @@ public class LibvirtConvertInstanceCommandWrapperTest {
                     .thenReturn(true);
 
             boolean result = convertInstanceCommandWrapper.performInstanceConversionUsingVddk(
-                    remoteInstanceTO, vmName, "/tmp/convert", "/opt/vddk", "direct", "nbd:nbdssl", null, 1000L, false, null, "tmp-uuid", "-ip");
+                    remoteInstanceTO, vmName, "/tmp/convert", "/opt/vddk", "direct", "nbd:nbdssl", null, 1000L, false, null, "tmp-uuid", "-ip", false);
 
             Assert.assertTrue(result);
             Script scriptMock = ignored.constructed().get(0);
@@ -276,7 +277,7 @@ public class LibvirtConvertInstanceCommandWrapperTest {
                     .thenReturn(true);
 
             boolean result = convertInstanceCommandWrapper.performInstanceConversionUsingVddk(
-                    remoteInstanceTO, vmName, "/tmp/convert", "/opt/vddk", "direct", null, null, 1000L, false, null, "tmp-uuid", "-ip");
+                    remoteInstanceTO, vmName, "/tmp/convert", "/opt/vddk", "direct", null, null, 1000L, false, null, "tmp-uuid", "-ip", false);
 
             Assert.assertFalse(result);
         }
@@ -304,13 +305,106 @@ public class LibvirtConvertInstanceCommandWrapperTest {
 
             boolean result = convertInstanceCommandWrapper.performInstanceConversionUsingVddk(
                     remoteInstanceTO, vmName, "/tmp/convert", "/opt/vddk", "direct", null,
-                    "AA:BB:CC:DD:EE", 1000L, false, null, "tmp-uuid", "-ip");
+                    "AA:BB:CC:DD:EE", 1000L, false, null, "tmp-uuid", "-ip", false);
 
             Assert.assertTrue(result);
             Script scriptMock = ignored.constructed().get(0);
             Mockito.verify(scriptMock).add(Mockito.contains("-io vddk-thumbprint=AA:BB:CC:DD:EE "));
             Mockito.verify(convertInstanceCommandWrapper, Mockito.never())
                     .getVcenterThumbprint(Mockito.anyString(), Mockito.anyLong(), Mockito.anyString());
+        }
+    }
+
+    @Test
+    public void testWindowsOnlineDisksFirstbootScriptContent() {
+        String script = LibvirtConvertInstanceCommandWrapper.WINDOWS_ONLINE_DISKS_FIRSTBOOT;
+        Assert.assertTrue("should set SAN policy OnlineAll", script.contains("OnlineAll"));
+        Assert.assertTrue("should clear the offline flag", script.contains("-IsOffline $false"));
+        Assert.assertTrue("should clear the read-only flag", script.contains("-IsReadOnly $false"));
+        Assert.assertTrue("should iterate the disks", script.contains("Get-Disk"));
+    }
+
+    @Test
+    public void testWriteWindowsOnlineDisksFirstbootScriptWritesFile() throws Exception {
+        Path firstboot = convertInstanceCommandWrapper.writeWindowsOnlineDisksFirstbootScript(vmName);
+        try {
+            Assert.assertNotNull(firstboot);
+            Assert.assertTrue(Files.exists(firstboot));
+            Assert.assertEquals(LibvirtConvertInstanceCommandWrapper.WINDOWS_ONLINE_DISKS_FIRSTBOOT,
+                    Files.readString(firstboot));
+        } finally {
+            if (firstboot != null) {
+                Files.deleteIfExists(firstboot);
+            }
+        }
+    }
+
+    @Test
+    public void testShellQuoteWrapsAndEscapesSingleQuotes() {
+        Assert.assertEquals("'/tmp/plain.bat'", convertInstanceCommandWrapper.shellQuote("/tmp/plain.bat"));
+        Assert.assertEquals("'a'\\''b'", convertInstanceCommandWrapper.shellQuote("a'b"));
+    }
+
+    @Test
+    public void testVddkConversionInjectsFirstbootForWindowsGuest() {
+        RemoteInstanceTO remoteInstanceTO = Mockito.mock(RemoteInstanceTO.class);
+        Mockito.when(remoteInstanceTO.getVcenterHost()).thenReturn("vcenter.local");
+        Mockito.when(remoteInstanceTO.getVcenterUsername()).thenReturn("administrator@vsphere.local");
+        Mockito.when(remoteInstanceTO.getVcenterPassword()).thenReturn("secret");
+        Mockito.when(remoteInstanceTO.getDatacenterName()).thenReturn("dc1");
+        Mockito.when(remoteInstanceTO.getClusterName()).thenReturn("cluster1");
+        Mockito.when(remoteInstanceTO.getHostName()).thenReturn("host1");
+        Mockito.doReturn("AA:BB:CC")
+                .when(convertInstanceCommandWrapper).getVcenterThumbprint(Mockito.anyString(), Mockito.anyLong(), Mockito.anyString());
+        Mockito.doReturn(Path.of("/tmp/cs-fb.bat"))
+                .when(convertInstanceCommandWrapper).writeWindowsOnlineDisksFirstbootScript(Mockito.anyString());
+
+        try (MockedStatic<Files> filesMock = Mockito.mockStatic(Files.class);
+             MockedConstruction<Script> ignored = Mockito.mockConstruction(Script.class, (mock, context) -> {
+                 Mockito.when(mock.execute(Mockito.any())).thenReturn("");
+                 Mockito.when(mock.getExitValue()).thenReturn(0);
+             })) {
+            filesMock.when(() -> Files.writeString(Mockito.any(), Mockito.eq("secret")))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+            filesMock.when(() -> Files.deleteIfExists(Mockito.any())).thenReturn(true);
+
+            boolean result = convertInstanceCommandWrapper.performInstanceConversionUsingVddk(
+                    remoteInstanceTO, vmName, "/tmp/convert", "/opt/vddk", "direct", null, null, 1000L, false, null, "tmp-uuid", "-ip", true);
+
+            Assert.assertTrue(result);
+            Script scriptMock = ignored.constructed().get(0);
+            // Path.toString() is platform-dependent on the test host; assert the flag is injected.
+            Mockito.verify(scriptMock).add(Mockito.contains("--firstboot "));
+        }
+    }
+
+    @Test
+    public void testVddkConversionSkipsFirstbootForNonWindowsGuest() {
+        RemoteInstanceTO remoteInstanceTO = Mockito.mock(RemoteInstanceTO.class);
+        Mockito.when(remoteInstanceTO.getVcenterHost()).thenReturn("vcenter.local");
+        Mockito.when(remoteInstanceTO.getVcenterUsername()).thenReturn("administrator@vsphere.local");
+        Mockito.when(remoteInstanceTO.getVcenterPassword()).thenReturn("secret");
+        Mockito.when(remoteInstanceTO.getDatacenterName()).thenReturn("dc1");
+        Mockito.when(remoteInstanceTO.getClusterName()).thenReturn("cluster1");
+        Mockito.when(remoteInstanceTO.getHostName()).thenReturn("host1");
+        Mockito.doReturn("AA:BB:CC")
+                .when(convertInstanceCommandWrapper).getVcenterThumbprint(Mockito.anyString(), Mockito.anyLong(), Mockito.anyString());
+
+        try (MockedStatic<Files> filesMock = Mockito.mockStatic(Files.class);
+             MockedConstruction<Script> ignored = Mockito.mockConstruction(Script.class, (mock, context) -> {
+                 Mockito.when(mock.execute(Mockito.any())).thenReturn("");
+                 Mockito.when(mock.getExitValue()).thenReturn(0);
+             })) {
+            filesMock.when(() -> Files.writeString(Mockito.any(), Mockito.eq("secret")))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+            filesMock.when(() -> Files.deleteIfExists(Mockito.any())).thenReturn(true);
+
+            boolean result = convertInstanceCommandWrapper.performInstanceConversionUsingVddk(
+                    remoteInstanceTO, vmName, "/tmp/convert", "/opt/vddk", "direct", null, null, 1000L, false, null, "tmp-uuid", "-ip", false);
+
+            Assert.assertTrue(result);
+            Mockito.verify(convertInstanceCommandWrapper, Mockito.never())
+                    .writeWindowsOnlineDisksFirstbootScript(Mockito.anyString());
         }
     }
 }

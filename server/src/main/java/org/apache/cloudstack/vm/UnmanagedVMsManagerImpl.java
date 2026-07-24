@@ -234,6 +234,18 @@ public class UnmanagedVMsManagerImpl implements UnmanagedVMsManager {
             ConfigKey.Kind.CSV,
             null);
 
+    ConfigKey<Boolean> ConvertVmwareInstancePreserveGuestStaticIp = new ConfigKey<>(Boolean.class,
+            "convert.vmware.instance.preserve.guest.static.ip",
+            "Advanced",
+            "false",
+            "Disabled by default. If enabled, when importing a VMware instance to KVM, the source guest's static IPv4 " +
+                    "configuration (as reported by VMware Tools) is preserved by passing virt-v2v --mac mappings during conversion. " +
+                    "Only useful for guests with static IPs on networks without DHCP; leave disabled when the destination network " +
+                    "assigns addresses via DHCP.",
+            true,
+            ConfigKey.Scope.Global,
+            null);
+
     @Inject
     private AgentManager agentManager;
     @Inject
@@ -1738,7 +1750,7 @@ public class UnmanagedVMsManagerImpl implements UnmanagedVMsManager {
             // Ensure that the configured resource limits will not be exceeded before beginning the conversion process
             checkVmResourceLimitsForUnmanagedInstanceImport(owner, sourceVMwareInstance, serviceOffering, template, reservations);
 
-            boolean isWindowsVm = sourceVMwareInstance.getOperatingSystem().toLowerCase().contains("windows");
+            boolean isWindowsVm = isWindowsGuest(sourceVMwareInstance);
             if (isWindowsVm) {
                 checkConversionSupportOnHost(convertHost, sourceVMName, true, useVddk, details);
             }
@@ -2146,6 +2158,8 @@ public class UnmanagedVMsManagerImpl implements UnmanagedVMsManager {
         if (StringUtils.isNotBlank(extraParams)) {
             cmd.setExtraParams(extraParams);
         }
+        cmd.setWindowsGuest(isWindowsGuest(sourceVMwareInstance));
+        cmd.setStaticIpMacParams(buildStaticIpMacParams(sourceVMwareInstance));
         int timeoutSeconds = UnmanagedVMsManager.ConvertVmwareInstanceToKvmTimeout.value() * 60 * 60;
         cmd.setWait(timeoutSeconds);
 
@@ -2178,9 +2192,76 @@ public class UnmanagedVMsManagerImpl implements UnmanagedVMsManager {
             cmd.setExtraParams(extraParams);
         }
         cmd.setUseVddk(useVddk);
+        cmd.setWindowsGuest(isWindowsGuest(sourceVMwareInstance));
+        cmd.setStaticIpMacParams(buildStaticIpMacParams(sourceVMwareInstance));
         applyVddkOverridesFromDetails(cmd, details);
         return convertAndImportToKVM(cmd, convertHost, importHost, sourceVM,
                 remoteInstanceTO, destinationStoragePools, temporaryConvertLocation, forceConvertToPool);
+    }
+
+    protected boolean isWindowsGuest(UnmanagedInstanceTO sourceVMwareInstance) {
+        return sourceVMwareInstance != null
+                && StringUtils.isNotBlank(sourceVMwareInstance.getOperatingSystem())
+                && sourceVMwareInstance.getOperatingSystem().toLowerCase().contains("windows");
+    }
+
+    /**
+     * Builds the virt-v2v {@code --mac} argument string that preserves the source guest's static IPv4
+     * configuration, one {@code --mac <mac>:ip:...} per NIC that has a usable MAC and IPv4 address.
+     * Returns {@code null} when the toggle is disabled or no NIC yields a usable mapping.
+     */
+    protected String buildStaticIpMacParams(UnmanagedInstanceTO sourceVMwareInstance) {
+        if (!Boolean.TRUE.equals(ConvertVmwareInstancePreserveGuestStaticIp.value())
+                || sourceVMwareInstance == null || CollectionUtils.isEmpty(sourceVMwareInstance.getNics())) {
+            return null;
+        }
+        List<String> macArgs = new ArrayList<>();
+        for (UnmanagedInstanceTO.Nic nic : sourceVMwareInstance.getNics()) {
+            String mapping = buildVirtV2vMacMapping(nic.getMacAddress(), firstIpv4Address(nic.getIpAddress()),
+                    nic.getIpv4Gateway(), nic.getIpv4PrefixLength(), nic.getDnsServers());
+            if (mapping != null) {
+                macArgs.add("--mac " + mapping);
+            }
+        }
+        return macArgs.isEmpty() ? null : String.join(" ", macArgs);
+    }
+
+    private String firstIpv4Address(List<String> ipAddresses) {
+        if (CollectionUtils.isEmpty(ipAddresses)) {
+            return null;
+        }
+        return ipAddresses.stream().filter(ip -> StringUtils.isNotBlank(ip) && NetUtils.isValidIp4(ip)).findFirst().orElse(null);
+    }
+
+    /**
+     * Builds a single virt-v2v {@code --mac} mapping token in the positional form
+     * {@code <mac>:ip:<addr>[,<gateway>[,<prefixlen>[,<nameserver>...]]]}. Trailing positional fields
+     * that are absent are omitted; an absent inner field is left empty (e.g. {@code addr,,24}).
+     * Returns {@code null} when either the MAC or the IPv4 address is missing.
+     */
+    protected String buildVirtV2vMacMapping(String mac, String ipv4, String gateway, Integer prefixLength, List<String> dnsServers) {
+        if (StringUtils.isBlank(mac) || StringUtils.isBlank(ipv4)) {
+            return null;
+        }
+        StringBuilder token = new StringBuilder(mac.trim()).append(":ip:").append(ipv4.trim());
+        List<String> tail = new ArrayList<>();
+        tail.add(StringUtils.isNotBlank(gateway) ? gateway.trim() : "");
+        tail.add(prefixLength != null ? String.valueOf(prefixLength) : "");
+        if (CollectionUtils.isNotEmpty(dnsServers)) {
+            for (String dns : dnsServers) {
+                if (StringUtils.isNotBlank(dns)) {
+                    tail.add(dns.trim());
+                }
+            }
+        }
+        int last = tail.size() - 1;
+        while (last >= 0 && tail.get(last).isEmpty()) {
+            last--;
+        }
+        for (int i = 0; i <= last; i++) {
+            token.append(",").append(tail.get(i));
+        }
+        return token.toString();
     }
 
     private void applyVddkOverridesFromDetails(ConvertInstanceCommand cmd, Map<String, String> details) {
@@ -3204,7 +3285,8 @@ public class UnmanagedVMsManagerImpl implements UnmanagedVMsManager {
                 ThreadsOnMSToImportVMwareVMFiles,
                 ThreadsOnKVMHostToImportVMwareVMFiles,
                 ConvertVmwareInstanceToKvmExtraParamsAllowed,
-                ConvertVmwareInstanceToKvmExtraParamsAllowedList
+                ConvertVmwareInstanceToKvmExtraParamsAllowedList,
+                ConvertVmwareInstancePreserveGuestStaticIp
         };
     }
 }

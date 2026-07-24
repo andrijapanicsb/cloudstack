@@ -402,6 +402,14 @@ public class UnmanagedInstanceTO {
 
         private String pciSlot;
 
+        // Guest static-networking details, best-effort from VMware guest info (VMware Tools).
+        // Used to preserve in-guest static IPv4 configuration across conversion via virt-v2v --mac.
+        private Integer ipv4PrefixLength;
+
+        private String ipv4Gateway;
+
+        private List<String> dnsServers;
+
         public String getNicId() {
             return nicId;
         }
@@ -472,6 +480,30 @@ public class UnmanagedInstanceTO {
 
         public void setPciSlot(String pciSlot) {
             this.pciSlot = pciSlot;
+        }
+
+        public Integer getIpv4PrefixLength() {
+            return ipv4PrefixLength;
+        }
+
+        public void setIpv4PrefixLength(Integer ipv4PrefixLength) {
+            this.ipv4PrefixLength = ipv4PrefixLength;
+        }
+
+        public String getIpv4Gateway() {
+            return ipv4Gateway;
+        }
+
+        public void setIpv4Gateway(String ipv4Gateway) {
+            this.ipv4Gateway = ipv4Gateway;
+        }
+
+        public List<String> getDnsServers() {
+            return dnsServers;
+        }
+
+        public void setDnsServers(List<String> dnsServers) {
+            this.dnsServers = dnsServers;
         }
 
         @Override

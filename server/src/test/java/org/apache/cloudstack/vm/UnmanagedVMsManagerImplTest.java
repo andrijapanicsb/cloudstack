@@ -1609,4 +1609,73 @@ public class UnmanagedVMsManagerImplTest {
         details.put("key", "not-a-number");
         unmanagedVMsManager.getDetailAsInteger("key", details);
     }
+
+    private UnmanagedInstanceTO.Nic staticNic(String mac, java.util.List<String> ips, String gateway, Integer prefix, java.util.List<String> dns) {
+        UnmanagedInstanceTO.Nic nic = new UnmanagedInstanceTO.Nic();
+        nic.setMacAddress(mac);
+        nic.setIpAddress(ips);
+        nic.setIpv4Gateway(gateway);
+        nic.setIpv4PrefixLength(prefix);
+        nic.setDnsServers(dns);
+        return nic;
+    }
+
+    @Test
+    public void testBuildVirtV2vMacMappingFull() {
+        String mapping = unmanagedVMsManager.buildVirtV2vMacMapping("00:0c:29:e6:3d:9d", "192.168.0.89",
+                "192.168.0.1", 24, java.util.List.of("192.168.0.254"));
+        Assert.assertEquals("00:0c:29:e6:3d:9d:ip:192.168.0.89,192.168.0.1,24,192.168.0.254", mapping);
+    }
+
+    @Test
+    public void testBuildVirtV2vMacMappingIpOnly() {
+        String mapping = unmanagedVMsManager.buildVirtV2vMacMapping("00:0c:29:e6:3d:9d", "192.168.0.89", null, null, null);
+        Assert.assertEquals("00:0c:29:e6:3d:9d:ip:192.168.0.89", mapping);
+    }
+
+    @Test
+    public void testBuildVirtV2vMacMappingPrefixWithoutGateway() {
+        String mapping = unmanagedVMsManager.buildVirtV2vMacMapping("00:0c:29:e6:3d:9d", "192.168.0.89", null, 24, null);
+        Assert.assertEquals("00:0c:29:e6:3d:9d:ip:192.168.0.89,,24", mapping);
+    }
+
+    @Test
+    public void testBuildVirtV2vMacMappingReturnsNullWhenMacOrIpMissing() {
+        Assert.assertNull(unmanagedVMsManager.buildVirtV2vMacMapping(null, "192.168.0.89", null, null, null));
+        Assert.assertNull(unmanagedVMsManager.buildVirtV2vMacMapping("00:0c:29:e6:3d:9d", null, null, null, null));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void setPreserveStaticIpToggle(boolean enabled) {
+        ConfigKey<Boolean> toggle = Mockito.mock(ConfigKey.class);
+        Mockito.when(toggle.value()).thenReturn(enabled);
+        unmanagedVMsManager.ConvertVmwareInstancePreserveGuestStaticIp = toggle;
+    }
+
+    @Test
+    public void testBuildStaticIpMacParamsDisabledReturnsNull() {
+        setPreserveStaticIpToggle(false);
+        UnmanagedInstanceTO instance = new UnmanagedInstanceTO();
+        instance.setNics(java.util.List.of(staticNic("00:0c:29:e6:3d:9d", java.util.List.of("192.168.0.89"), "192.168.0.1", 24, null)));
+        Assert.assertNull(unmanagedVMsManager.buildStaticIpMacParams(instance));
+    }
+
+    @Test
+    public void testBuildStaticIpMacParamsBuildsPerNicWhenEnabled() {
+        setPreserveStaticIpToggle(true);
+        UnmanagedInstanceTO instance = new UnmanagedInstanceTO();
+        instance.setNics(java.util.List.of(
+                staticNic("00:0c:29:e6:3d:9d", java.util.List.of("192.168.0.89"), "192.168.0.1", 24, java.util.List.of("192.168.0.254")),
+                staticNic("00:0c:29:aa:bb:cc", java.util.List.of("10.0.0.5"), null, null, null)));
+        String params = unmanagedVMsManager.buildStaticIpMacParams(instance);
+        Assert.assertEquals("--mac 00:0c:29:e6:3d:9d:ip:192.168.0.89,192.168.0.1,24,192.168.0.254 --mac 00:0c:29:aa:bb:cc:ip:10.0.0.5", params);
+    }
+
+    @Test
+    public void testBuildStaticIpMacParamsSkipsNicsWithoutIpv4() {
+        setPreserveStaticIpToggle(true);
+        UnmanagedInstanceTO instance = new UnmanagedInstanceTO();
+        instance.setNics(java.util.List.of(staticNic("00:0c:29:e6:3d:9d", null, null, null, null)));
+        Assert.assertNull(unmanagedVMsManager.buildStaticIpMacParams(instance));
+    }
 }

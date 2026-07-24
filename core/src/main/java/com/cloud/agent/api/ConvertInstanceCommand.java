@@ -35,6 +35,8 @@ public class ConvertInstanceCommand extends Command {
     private String vddkLibDir;
     private String vddkTransports;
     private String vddkThumbprint;
+    private boolean windowsGuest;
+    private String staticIpMacParams;
 
     public ConvertInstanceCommand() {
     }
@@ -124,6 +126,27 @@ public class ConvertInstanceCommand extends Command {
 
     public void setVddkThumbprint(String vddkThumbprint) {
         this.vddkThumbprint = vddkThumbprint;
+    }
+
+    public boolean isWindowsGuest() {
+        return windowsGuest;
+    }
+
+    public void setWindowsGuest(boolean windowsGuest) {
+        this.windowsGuest = windowsGuest;
+    }
+
+    /**
+     * virt-v2v {@code --mac} arguments that preserve the source guest's static IPv4 configuration,
+     * built server-side from the source VM's guest NIC info. Applied separately from
+     * {@link #extraParams} so it is not subject to the operator extra-params allow-list.
+     */
+    public String getStaticIpMacParams() {
+        return staticIpMacParams;
+    }
+
+    public void setStaticIpMacParams(String staticIpMacParams) {
+        this.staticIpMacParams = staticIpMacParams;
     }
 
     @Override

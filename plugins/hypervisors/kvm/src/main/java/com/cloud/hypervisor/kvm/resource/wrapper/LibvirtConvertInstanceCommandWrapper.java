@@ -60,6 +60,21 @@ public class LibvirtConvertInstanceCommandWrapper extends CommandWrapper<Convert
             List.of(Hypervisor.HypervisorType.VMware);
     private static final Pattern SHA1_FINGERPRINT_PATTERN = Pattern.compile("(?i)(?:SHA1\\s+)?Fingerprint\\s*=\\s*([0-9A-F:]+)");
 
+    /**
+     * First-boot batch script injected into converted Windows guests. virt-v2v runs it once on
+     * the guest's first boot. It brings migrated data disks online and read-write and sets the SAN
+     * policy to OnlineAll so future disks come up online too, working around the common post-v2v
+     * symptom where secondary disks stay Offline/Read-only under the default Windows SAN policy.
+     * The Storage cmdlets used are available on Windows Server 2012 and later.
+     */
+    protected static final String WINDOWS_ONLINE_DISKS_FIRSTBOOT =
+            "@echo off\r\n" +
+            "rem CloudStack post-migration: online offline disks, clear read-only, set SAN policy OnlineAll\r\n" +
+            "set CSLOG=%SystemDrive%\\cloudstack-firstboot.log\r\n" +
+            "echo [%DATE% %TIME%] CloudStack firstboot: bringing migrated disks online >> \"%CSLOG%\"\r\n" +
+            "powershell -NonInteractive -ExecutionPolicy Bypass -Command \"try { Set-StorageSetting -NewDiskPolicy OnlineAll -ErrorAction SilentlyContinue } catch {}; Get-Disk | Where-Object { $_.IsOffline } | ForEach-Object { Set-Disk -Number $_.Number -IsOffline $false }; Get-Disk | Where-Object { $_.IsReadOnly } | ForEach-Object { Set-Disk -Number $_.Number -IsReadOnly $false }\" >> \"%CSLOG%\" 2>&1\r\n" +
+            "exit /b 0\r\n";
+
     @Override
     public Answer execute(ConvertInstanceCommand cmd, LibvirtComputingResource serverResource) {
         RemoteInstanceTO sourceInstance = cmd.getSourceInstance();
@@ -70,7 +85,17 @@ public class LibvirtConvertInstanceCommandWrapper extends CommandWrapper<Convert
         long timeout = (long) cmd.getWait() * 1000;
         String extraParams = cmd.getExtraParams();
         boolean useVddk = cmd.isUseVddk();
+        boolean windowsGuest = cmd.isWindowsGuest();
         String originalVMName = cmd.getOriginalVMName();
+
+        // Server-built virt-v2v --mac arguments (static-IPv4 preservation) are applied through the
+        // same splice as operator extra params. They are kept in a separate command field so they
+        // bypass the operator extra-params allow-list, but folded together here for the conversion.
+        String staticIpMacParams = cmd.getStaticIpMacParams();
+        if (StringUtils.isNotBlank(staticIpMacParams)) {
+            extraParams = StringUtils.isNotBlank(extraParams) ? (extraParams + " " + staticIpMacParams) : staticIpMacParams;
+            logger.info("({}) Applying static-IP virt-v2v mappings: {}", originalVMName, staticIpMacParams);
+        }
 
         if (cmd.getCheckConversionSupport() && !serverResource.hostSupportsInstanceConversion()) {
             String msg = String.format("Cannot convert the instance %s from VMware as the virt-v2v binary is not found. " +
@@ -116,7 +141,7 @@ public class LibvirtConvertInstanceCommandWrapper extends CommandWrapper<Convert
                 String passwordOption = serverResource.getDetectedPasswordFileOption();
                 result = performInstanceConversionUsingVddk(sourceInstance, originalVMName, temporaryConvertPath,
                         vddkLibDir, serverResource.getLibguestfsBackend(), vddkTransports, configuredVddkThumbprint,
-                        timeout, verboseModeEnabled, extraParams, temporaryConvertUuid, passwordOption);
+                        timeout, verboseModeEnabled, extraParams, temporaryConvertUuid, passwordOption, windowsGuest);
             } else {
                 logger.info("({}) Using OVF-based conversion (export + local convert)", originalVMName);
                 String sourceOVFDirPath;
@@ -150,7 +175,7 @@ public class LibvirtConvertInstanceCommandWrapper extends CommandWrapper<Convert
                 }
 
                 result = performInstanceConversion(originalVMName, sourceOVFDirPath, temporaryConvertPath, temporaryConvertUuid,
-                        timeout, verboseModeEnabled, extraParams, serverResource);
+                        timeout, verboseModeEnabled, extraParams, serverResource, windowsGuest);
             }
 
             if (!result) {
@@ -251,7 +276,7 @@ public class LibvirtConvertInstanceCommandWrapper extends CommandWrapper<Convert
                                                 String temporaryConvertFolder,
                                                 String temporaryConvertUuid,
                                                 long timeout, boolean verboseModeEnabled, String extraParams,
-                                                LibvirtComputingResource serverResource) {
+                                                LibvirtComputingResource serverResource, boolean windowsGuest) {
         Script script = new Script("virt-v2v", timeout, logger);
         script.add("--root", "first");
         script.add("-i", "ova");
@@ -266,17 +291,25 @@ public class LibvirtConvertInstanceCommandWrapper extends CommandWrapper<Convert
         if (StringUtils.isNotBlank(extraParams)) {
             addExtraParamsToScript(extraParams, script);
         }
-
-        String logPrefix = String.format("(%s) virt-v2v ovf source: %s progress", originalVMName, sourceOVFDirPath);
-        OutputInterpreter.LineByLineOutputLogger outputLogger = new OutputInterpreter.LineByLineOutputLogger(logger, logPrefix);
-        Map<String, String> convertInstanceEnv = serverResource.getConvertInstanceEnv();
-        if (MapUtils.isEmpty(convertInstanceEnv)) {
-            script.execute(outputLogger);
-        } else {
-            script.execute(outputLogger, convertInstanceEnv);
+        Path firstbootScript = windowsGuest ? writeWindowsOnlineDisksFirstbootScript(originalVMName) : null;
+        if (firstbootScript != null) {
+            script.add("--firstboot", firstbootScript.toString());
         }
-        int exitValue = script.getExitValue();
-        return exitValue == 0;
+
+        try {
+            String logPrefix = String.format("(%s) virt-v2v ovf source: %s progress", originalVMName, sourceOVFDirPath);
+            OutputInterpreter.LineByLineOutputLogger outputLogger = new OutputInterpreter.LineByLineOutputLogger(logger, logPrefix);
+            Map<String, String> convertInstanceEnv = serverResource.getConvertInstanceEnv();
+            if (MapUtils.isEmpty(convertInstanceEnv)) {
+                script.execute(outputLogger);
+            } else {
+                script.execute(outputLogger, convertInstanceEnv);
+            }
+            int exitValue = script.getExitValue();
+            return exitValue == 0;
+        } finally {
+            deleteFirstbootScriptQuietly(firstbootScript, originalVMName);
+        }
     }
 
     protected void addExtraParamsToScript(String extraParams, Script script) {
@@ -308,7 +341,7 @@ public class LibvirtConvertInstanceCommandWrapper extends CommandWrapper<Convert
                                                          String libguestfsBackend, String vddkTransports,
                                                          String configuredVddkThumbprint,
                                                          long timeout, boolean verboseModeEnabled, String extraParams,
-                                                         String temporaryConvertUuid, String passwordOption) {
+                                                         String temporaryConvertUuid, String passwordOption, boolean windowsGuest) {
 
         String vcenterPassword = vmwareInstance.getVcenterPassword();
         if (StringUtils.isBlank(vcenterPassword)) {
@@ -328,6 +361,7 @@ public class LibvirtConvertInstanceCommandWrapper extends CommandWrapper<Convert
             return false;
         }
 
+        Path firstbootScript = windowsGuest ? writeWindowsOnlineDisksFirstbootScript(originalVMName) : null;
         try {
             String vpxUrl = buildVpxUrl(vmwareInstance);
 
@@ -372,6 +406,10 @@ public class LibvirtConvertInstanceCommandWrapper extends CommandWrapper<Convert
                 cmd.append(extraParams).append(" ");
             }
 
+            if (firstbootScript != null) {
+                cmd.append("--firstboot ").append(shellQuote(firstbootScript.toString())).append(" ");
+            }
+
             Script script = new Script("/bin/bash", timeout, logger);
             script.add("-c");
             script.add(cmd.toString());
@@ -396,7 +434,50 @@ public class LibvirtConvertInstanceCommandWrapper extends CommandWrapper<Convert
             } catch (Exception e) {
                 logger.warn("({}) Failed to delete password file {}: {}", originalVMName, passwordFilePath, e.getMessage());
             }
+            deleteFirstbootScriptQuietly(firstbootScript, originalVMName);
         }
+    }
+
+    /**
+     * Writes the Windows online-disks first-boot batch script ({@link #WINDOWS_ONLINE_DISKS_FIRSTBOOT})
+     * to a temporary file on the conversion host so it can be passed to virt-v2v via {@code --firstboot}.
+     * Returns the path to the written script, or {@code null} if it could not be written (in which case
+     * the conversion proceeds without the first-boot fix rather than failing).
+     */
+    protected Path writeWindowsOnlineDisksFirstbootScript(String originalVMName) {
+        try {
+            Path firstbootScript = Files.createTempFile("cloudstack-firstboot-online-disks-", ".bat");
+            Files.writeString(firstbootScript, WINDOWS_ONLINE_DISKS_FIRSTBOOT);
+            logger.info("({}) Windows guest detected; injecting first-boot script to online migrated disks: {}",
+                    originalVMName, firstbootScript);
+            return firstbootScript;
+        } catch (Exception e) {
+            logger.warn("({}) Failed to write Windows online-disks first-boot script; conversion will proceed without it: {}",
+                    originalVMName, e.getMessage());
+            return null;
+        }
+    }
+
+    private void deleteFirstbootScriptQuietly(Path firstbootScript, String originalVMName) {
+        if (firstbootScript == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(firstbootScript);
+        } catch (Exception e) {
+            logger.warn("({}) Failed to delete first-boot script {}: {}", originalVMName, firstbootScript, e.getMessage());
+        }
+    }
+
+    /**
+     * Minimal single-quote shell quoting for embedding a host-local path into the {@code /bin/bash -c}
+     * VDDK conversion command line.
+     */
+    protected String shellQuote(String value) {
+        if (value == null) {
+            return "''";
+        }
+        return "'" + value.replace("'", "'\\''") + "'";
     }
 
     protected String getVcenterThumbprint(String vcenterHost, long timeout, String originalVMName) {
