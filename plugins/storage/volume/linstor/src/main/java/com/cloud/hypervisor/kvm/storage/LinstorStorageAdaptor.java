@@ -31,6 +31,8 @@ import com.cloud.storage.Storage;
 import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.utils.script.Script;
 import org.apache.cloudstack.storage.datastore.util.LinstorUtil;
+import org.apache.cloudstack.storage.datastore.util.LinstorImportHelper;
+import org.apache.cloudstack.storage.volume.VolumeOnStorageTO;
 import org.apache.cloudstack.utils.qemu.QemuImg;
 import org.apache.cloudstack.utils.qemu.QemuImgException;
 import org.apache.cloudstack.utils.qemu.QemuImgFile;
@@ -159,6 +161,10 @@ public class LinstorStorageAdaptor implements StorageAdaptor {
             logger.error(apiEx);
             throw new CloudRuntimeException(apiEx.getBestMessage(), apiEx);
         }
+    }
+
+    public List<VolumeOnStorageTO> getVolumesForImport(LinstorStoragePool pool, String path) {
+        return LinstorImportHelper.getVolumesForImport(getLinstorAPI(pool), pool.getResourceGroup(), path);
     }
 
     @Override

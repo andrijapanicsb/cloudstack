@@ -16,6 +16,8 @@
 // under the License.
 package com.cloud.hypervisor.kvm.storage;
 
+import org.apache.cloudstack.storage.volume.VolumeOnStorageTO;
+
 import java.util.List;
 import java.util.Map;
 
@@ -100,6 +102,11 @@ public class LinstorStoragePool implements KVMStoragePool {
     public List<KVMPhysicalDisk> listPhysicalDisks()
     {
         return _storageAdaptor.listPhysicalDisks(_uuid, this);
+    }
+
+    @Override
+    public List<VolumeOnStorageTO> getVolumesForImport(String path) {
+        return ((LinstorStorageAdaptor) _storageAdaptor).getVolumesForImport(this, path);
     }
 
     @Override

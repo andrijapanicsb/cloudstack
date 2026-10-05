@@ -105,6 +105,7 @@ import org.apache.cloudstack.storage.datastore.db.PrimaryDataStoreDao;
 import org.apache.cloudstack.storage.datastore.db.StoragePoolVO;
 import org.apache.cloudstack.storage.datastore.util.LinstorConfigurationManager;
 import org.apache.cloudstack.storage.datastore.util.LinstorUtil;
+import org.apache.cloudstack.storage.datastore.util.LinstorImportHelper;
 import org.apache.cloudstack.storage.snapshot.SnapshotObject;
 import org.apache.cloudstack.storage.to.SnapshotObjectTO;
 import org.apache.cloudstack.storage.to.VolumeObjectTO;
@@ -116,6 +117,11 @@ import org.apache.logging.log4j.Logger;
 import java.nio.charset.StandardCharsets;
 
 public class LinstorPrimaryDataStoreDriverImpl implements PrimaryDataStoreDriver {
+    @Override
+    public void validateVolumeForImport(StoragePool pool, String path) {
+        LinstorImportHelper.validateResourceGroup(LinstorUtil.getLinstorAPI(pool.getHostAddress()), pool.getPath(), path);
+    }
+
     protected Logger logger = LogManager.getLogger(getClass());
     @Inject private PrimaryDataStoreDao _storagePoolDao;
     @Inject private VolumeDao _volumeDao;
