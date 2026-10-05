@@ -61,6 +61,14 @@ public final class LibvirtCheckVolumeCommandWrapper extends CommandWrapper<Check
         KVMStoragePool pool = poolMgr.getStoragePool(storageFilerTO.getType(), storageFilerTO.getUuid());
 
         try {
+            if (storageFilerTO.getType() == Storage.StoragePoolType.Linstor) {
+                List<VolumeOnStorageTO> volumes = pool.getVolumesForImport(srcFile);
+                if (volumes.size() != 1 || !srcFile.equals(volumes.get(0).getPath())) {
+                    return new Answer(command, false, "LINSTOR volume not found or path mismatch");
+                }
+                VolumeOnStorageTO volume = volumes.get(0);
+                return new CheckVolumeAnswer(command, true, "", volume.getVirtualSize(), volume.getDetails());
+            }
             if (STORAGE_POOL_TYPES_SUPPORTED.contains(storageFilerTO.getType())) {
                 final KVMPhysicalDisk vol = pool.getPhysicalDisk(srcFile);
                 final String path = vol.getPath();
@@ -77,7 +85,7 @@ public final class LibvirtCheckVolumeCommandWrapper extends CommandWrapper<Check
             }
         } catch (final Exception e) {
             logger.error("Error while checking the disk: {}", e.getMessage());
-            return new Answer(command, false, result);
+            return new Answer(command, false, storageFilerTO.getType() == Storage.StoragePoolType.Linstor ? e.getMessage() : result);
         }
     }
 

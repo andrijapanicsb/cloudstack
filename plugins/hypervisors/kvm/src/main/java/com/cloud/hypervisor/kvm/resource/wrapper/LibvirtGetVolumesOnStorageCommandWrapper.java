@@ -64,6 +64,19 @@ public final class LibvirtGetVolumesOnStorageCommandWrapper extends CommandWrapp
         final KVMStoragePoolManager storagePoolMgr = libvirtComputingResource.getStoragePoolMgr();
         final KVMStoragePool storagePool = storagePoolMgr.getStoragePool(pool.getType(), pool.getUuid(), true);
 
+        if (pool.getType() == StoragePoolType.Linstor) {
+            try {
+                List<VolumeOnStorageTO> volumes = storagePool.getVolumesForImport(StringUtils.trimToNull(volumePath));
+                if (StringUtils.isNotBlank(keyword)) {
+                    volumes = volumes.stream().filter(volume -> StringUtils.containsIgnoreCase(volume.getName(), keyword))
+                            .collect(Collectors.toList());
+                }
+                return new GetVolumesOnStorageAnswer(command, volumes);
+            } catch (RuntimeException e) {
+                return new GetVolumesOnStorageAnswer(command, false, e.getMessage());
+            }
+        }
+
         if (StringUtils.isNotBlank(volumePath)) {
             return addVolumeByVolumePath(command, storagePool, volumePath);
         } else {

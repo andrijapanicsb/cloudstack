@@ -82,6 +82,22 @@ import static org.junit.Assert.assertTrue;
 @RunWith(MockitoJUnitRunner.class)
 public class VolumeOrchestratorTest {
 
+    @Test
+    public void importedLinstorVolumeUsesRawFormat() {
+        Assert.assertEquals(Storage.ImageFormat.RAW, volumeOrchestrator.getSupportedImageFormatForImportedVolume(
+                Hypervisor.HypervisorType.KVM, Storage.StoragePoolType.Linstor));
+    }
+
+    @Test
+    public void importedNonLinstorVolumeFormatIsUnchanged() {
+        Assert.assertEquals(Storage.ImageFormat.QCOW2, volumeOrchestrator.getSupportedImageFormatForImportedVolume(
+                Hypervisor.HypervisorType.KVM, Storage.StoragePoolType.NetworkFilesystem));
+        Assert.assertEquals(Storage.ImageFormat.QCOW2, volumeOrchestrator.getSupportedImageFormatForImportedVolume(
+                Hypervisor.HypervisorType.KVM, Storage.StoragePoolType.RBD));
+        Assert.assertEquals(Storage.ImageFormat.OVA, volumeOrchestrator.getSupportedImageFormatForImportedVolume(
+                Hypervisor.HypervisorType.VMware, Storage.StoragePoolType.Linstor));
+    }
+
     @Mock
     protected ResourceLimitService resourceLimitMgr;
     @Mock

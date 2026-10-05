@@ -1149,6 +1149,13 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
         }
     }
 
+    protected ImageFormat getSupportedImageFormatForImportedVolume(HypervisorType hyperType, Storage.StoragePoolType poolType) {
+        if (hyperType == HypervisorType.KVM && poolType == Storage.StoragePoolType.Linstor) {
+            return ImageFormat.RAW;
+        }
+        return getSupportedImageFormatForCluster(hyperType);
+    }
+
     private ImageFormat getSupportedImageFormatForCluster(HypervisorType hyperType) {
         if (hyperType == HypervisorType.XenServer) {
             return ImageFormat.VHD;
@@ -2367,7 +2374,7 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
             vol.setDisplayVolume(userVm.isDisplayVm());
         }
 
-        vol.setFormat(getSupportedImageFormatForCluster(hypervisorType));
+        vol.setFormat(getSupportedImageFormatForImportedVolume(hypervisorType, poolType));
         vol.setPoolId(poolId);
         vol.setPoolType(poolType);
         vol.setPath(path);
@@ -2411,7 +2418,7 @@ public class VolumeOrchestrator extends ManagerBase implements VolumeOrchestrati
             vol.setDisplayVolume(userVm.isDisplayVm());
         }
 
-        vol.setFormat(getSupportedImageFormatForCluster(vm.getHypervisorType()));
+        vol.setFormat(getSupportedImageFormatForImportedVolume(vm.getHypervisorType(), poolType));
         vol.setPoolId(poolId);
         vol.setPoolType(poolType);
         vol.setPath(path);
